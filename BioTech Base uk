@@ -1,0 +1,281 @@
+import customtkinter as ctk
+from tkinter import filedialog, messagebox
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+
+from Bio import SeqIO
+from Bio.SeqUtils import gc_fraction
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
+from Bio.SeqUtils import MeltingTemp as mt
+from Bio.Restriction import RestrictionBatch
+from Bio.PDB import PDBParser
+
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
+class BioTechProApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("BioTech Pro - Інструмент Біохіміка")
+        self.geometry("1100x750")
+        
+        self.current_seq = None
+        self.current_seq_id = "Не завантажено"
+        
+        self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
+        self.sidebar.pack(side="left", fill="y")
+        
+        ctk.CTkLabel(self.sidebar, text="BioTech Pro", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=20)
+        
+        self.btn_lab = ctk.CTkButton(self.sidebar, text="🔬 Навчальна лабораторія", height=40, command=self.show_lab_frame)
+        self.btn_lab.pack(pady=10, padx=20, fill="x")
+        
+        self.btn_bioinfo = ctk.CTkButton(self.sidebar, text="🧬 Біоінформатика (Pro)", height=40, command=self.show_bioinfo_frame)
+        self.btn_bioinfo.pack(pady=10, padx=20, fill="x")
+        
+        ctk.CTkLabel(self.sidebar, text="--- Файли ---", text_color="gray").pack(pady=(20, 0))
+        ctk.CTkButton(self.sidebar, text="Завантажити FASTA", fg_color="transparent", border_width=1, command=self.load_fasta).pack(pady=10, padx=20)
+        
+        self.status_lbl = ctk.CTkLabel(self.sidebar, text="Послідовність:\nНемає", text_color="gray")
+        self.status_lbl.pack(side="bottom", pady=20)
+
+        self.lab_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.setup_lab_zone()
+        
+        self.bioinfo_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.setup_bioinfo_zone()
+        
+        self.log_box = ctk.CTkTextbox(self, height=150, font=("Consolas", 13))
+        self.log_box.pack(side="bottom", fill="x", padx=10, pady=10)
+        
+        self.show_lab_frame()
+        self.log("Вітаємо у BioTech Pro.")
+        self.log("Виберіть потрібний розділ у лівому меню.\n")
+
+    def log(self, message):
+        self.log_box.insert("end", message + "\n")
+        self.log_box.see("end")
+
+    def show_lab_frame(self):
+        self.bioinfo_frame.pack_forget()
+        self.lab_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
+        self.btn_lab.configure(fg_color="#1f538d") # Активний колір
+        self.btn_bioinfo.configure(fg_color="transparent", border_width=1)
+
+    def show_bioinfo_frame(self):
+        self.lab_frame.pack_forget()
+        self.bioinfo_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
+        self.btn_bioinfo.configure(fg_color="#1f538d")
+        self.btn_lab.configure(fg_color="transparent", border_width=1)
+
+    def load_fasta(self):
+        path = filedialog.askopenfilename(filetypes=[("FASTA", "*.fasta *.fa *.fna")])
+        if path:
+            try:
+                record = next(SeqIO.parse(path, "fasta"))
+                self.current_seq = record.seq
+                self.current_seq_id = record.id
+                self.status_lbl.configure(text=f"{self.current_seq_id[:15]}...\nДовжина: {len(self.current_seq)}")
+                self.log(f"[FASTA] Успішно завантажено: {self.current_seq_id}")
+            except Exception as e:
+                self.log(f"[Помилка] Читання FASTA: {e}")
+
+    def setup_lab_zone(self):
+        self.lab_tabs = ctk.CTkTabview(self.lab_frame)
+        self.lab_tabs.pack(fill="both", expand=True)
+        
+        tab_c1v1 = self.lab_tabs.add("C1V1 (Розведення)")
+        tab_ph = self.lab_tabs.add("pH та Буфери")
+        tab_spec = self.lab_tabs.add("Спектрофотометрія")
+        tab_aa = self.lab_tabs.add("Амінокислоти (Довідник)")
+        
+        ctk.CTkLabel(tab_c1v1, text="Рівняння розведення C₁V₁ = C₂V₂\nЗалиште одне поле порожнім (витріть нуль), щоб обчислити його.", font=("Arial", 14)).pack(pady=10)
+        
+        c1v1_frame = ctk.CTkFrame(tab_c1v1)
+        c1v1_frame.pack(pady=10, padx=20)
+        
+        self.ent_c1 = self.create_input_row(c1v1_frame, "C₁ (Початкова концентрація):", 0, "1.0")
+        self.ent_v1 = self.create_input_row(c1v1_frame, "V₁ (Об'єм початкового розчину):", 1, "")
+        self.ent_c2 = self.create_input_row(c1v1_frame, "C₂ (Кінцева концентрація):", 2, "0.1")
+        self.ent_v2 = self.create_input_row(c1v1_frame, "V₂ (Кінцевий об'єм):", 3, "100")
+        
+        ctk.CTkButton(tab_c1v1, text="Обчислити", command=self.calc_c1v1).pack(pady=10)
+
+        ctk.CTkLabel(tab_ph, text="Рівняння Хендерсона-Хассельбаха\npH = pKa + log([Сіль] / [Кислота])", font=("Arial", 14)).pack(pady=10)
+        ph_frame = ctk.CTkFrame(tab_ph)
+        ph_frame.pack(pady=10)
+        
+        self.ent_ph = self.create_input_row(ph_frame, "Бажаний pH розчину:", 0, "7.4")
+        self.ent_pka = self.create_input_row(ph_frame, "pKa буфера (наприклад, фосфат=7.2):", 1, "7.2")
+        self.ent_c_total = self.create_input_row(ph_frame, "Загальна молярність (М):", 2, "0.1")
+        
+        ctk.CTkButton(tab_ph, text="Розрахувати пропорції", command=self.calc_ph).pack(pady=10)
+
+        ctk.CTkLabel(tab_spec, text="Закон Бугера-Ламберта-Бера (A = ε·c·l)\nРозрахунок концентрації за поглинанням", font=("Arial", 14)).pack(pady=10)
+        spec_frame = ctk.CTkFrame(tab_spec)
+        spec_frame.pack(pady=10)
+        
+        self.ent_abs = self.create_input_row(spec_frame, "Оптична густина (A):", 0, "0.450")
+        self.ent_eps = self.create_input_row(spec_frame, "Коеф. екстинкції (ε):", 1, "43824")
+        self.ent_l = self.create_input_row(spec_frame, "Довжина кювети (l, см):", 2, "1.0")
+        
+        ctk.CTkButton(tab_spec, text="Розрахувати концентрацію", command=self.calc_spec).pack(pady=10)
+
+        self.aa_data = {
+            "Аланін (Alanine)": {"code3": "Ala", "code1": "A", "type": "Неполярна, аліфатична", "mw": 89.1, "pi": 6.00},
+            "Аргінін (Arginine)": {"code3": "Arg", "code1": "R", "type": "Полярна, основна (+)", "mw": 174.2, "pi": 10.76},
+            "Аспарагін (Asparagine)": {"code3": "Asn", "code1": "N", "type": "Полярна, незаріджена", "mw": 132.1, "pi": 5.41},
+            "Аспарагінова кислота (Aspartic acid)": {"code3": "Asp", "code1": "D", "type": "Полярна, кисла (-)", "mw": 133.1, "pi": 2.77},
+            "Валін (Valine)": {"code3": "Val", "code1": "V", "type": "Неполярна, аліфатична", "mw": 117.1, "pi": 5.96},
+            "Гістидин (Histidine)": {"code3": "His", "code1": "H", "type": "Полярна, основна (+)", "mw": 155.2, "pi": 7.59},
+            "Гліцин (Glycine)": {"code3": "Gly", "code1": "G", "type": "Неполярна, аліфатична", "mw": 75.1, "pi": 5.97},
+            "Глутамін (Glutamine)": {"code3": "Gln", "code1": "Q", "type": "Полярна, незаріджена", "mw": 146.1, "pi": 5.65},
+            "Глутамінова кислота (Glutamic acid)": {"code3": "Glu", "code1": "E", "type": "Полярна, кисла (-)", "mw": 147.1, "pi": 3.22},
+            "Ізолейцин (Isoleucine)": {"code3": "Ile", "code1": "I", "type": "Неполярна, аліфатична", "mw": 131.2, "pi": 6.05},
+            "Лейцин (Leucine)": {"code3": "Leu", "code1": "L", "type": "Неполярна, аліфатична", "mw": 131.2, "pi": 5.98},
+            "Лізин (Lysine)": {"code3": "Lys", "code1": "K", "type": "Полярна, основна (+)", "mw": 146.2, "pi": 9.74},
+            "Метіонін (Methionine)": {"code3": "Met", "code1": "M", "type": "Неполярна, сірковмісна", "mw": 149.2, "pi": 5.74},
+            "Пролін (Proline)": {"code3": "Pro", "code1": "P", "type": "Неполярна, циклічна", "mw": 115.1, "pi": 6.30},
+            "Серин (Serine)": {"code3": "Ser", "code1": "S", "type": "Полярна, незаріджена", "mw": 105.1, "pi": 5.68},
+            "Треонін (Threonine)": {"code3": "Thr", "code1": "T", "type": "Полярна, незаріджена", "mw": 119.1, "pi": 5.60},
+            "Триптофан (Tryptophan)": {"code3": "Trp", "code1": "W", "type": "Неполярна, ароматична", "mw": 204.2, "pi": 5.89},
+            "Фенілаланін (Phenylalanine)": {"code3": "Phe", "code1": "F", "type": "Неполярна, ароматична", "mw": 165.2, "pi": 5.48},
+            "Цистеїн (Cysteine)": {"code3": "Cys", "code1": "C", "type": "Полярна, сірковмісна", "mw": 121.2, "pi": 5.07},
+            "Тирозин (Tyrosine)": {"code3": "Tyr", "code1": "Y", "type": "Полярна, ароматична", "mw": 181.2, "pi": 5.66}
+        }
+        
+        ctk.CTkLabel(tab_aa, text="Виберіть амінокислоту для довідки:").pack(pady=10)
+        self.aa_combo = ctk.CTkComboBox(tab_aa, values=list(self.aa_data.keys()), command=self.show_aa_info)
+        self.aa_combo.pack(pady=10)
+        self.aa_combo.set("Аланін (Alanine)")
+        
+        self.lbl_aa_info = ctk.CTkLabel(tab_aa, text="", font=("Arial", 14), justify="left")
+        self.lbl_aa_info.pack(pady=20)
+        self.show_aa_info("Аланін (Alanine)")
+
+    def create_input_row(self, parent, label_text, row_num, default_val):
+        ctk.CTkLabel(parent, text=label_text).grid(row=row_num, column=0, padx=10, pady=5, sticky="e")
+        ent = ctk.CTkEntry(parent, width=120)
+        ent.grid(row=row_num, column=1, padx=10, pady=5)
+        if default_val:
+            ent.insert(0, default_val)
+        return ent
+
+    def calc_c1v1(self):
+        vals = [self.ent_c1.get(), self.ent_v1.get(), self.ent_c2.get(), self.ent_v2.get()]
+        empty_count = sum(1 for v in vals if v.strip() == "")
+        
+        if empty_count != 1:
+            return self.log("[Помилка C1V1] Залиште рівно ОДНЕ поле порожнім для розрахунку.")
+            
+        try:
+            if not vals[0]: # Шукаємо C1
+                res = (float(vals[2]) * float(vals[3])) / float(vals[1])
+                self.log(f"[C1V1] Початкова концентрація C₁ = {res:.4f}")
+            elif not vals[1]: # Шукаємо V1
+                res = (float(vals[2]) * float(vals[3])) / float(vals[0])
+                self.log(f"[C1V1] Потрібно взяти {res:.2f} одиниць об'єму початкового розчину (V₁)")
+                if float(vals[3]) - res > 0:
+                    self.log(f"       І додати {float(vals[3]) - res:.2f} одиниць розчинника (води).")
+            elif not vals[2]: # Шукаємо C2
+                res = (float(vals[0]) * float(vals[1])) / float(vals[3])
+                self.log(f"[C1V1] Кінцева концентрація C₂ = {res:.4f}")
+            elif not vals[3]: # Шукаємо V2
+                res = (float(vals[0]) * float(vals[1])) / float(vals[2])
+                self.log(f"[C1V1] Кінцевий об'єм V₂ = {res:.2f}")
+        except ValueError:
+            self.log("[Помилка] Вводьте лише числа.")
+
+    def calc_ph(self):
+        try:
+            ph = float(self.ent_ph.get())
+            pka = float(self.ent_pka.get())
+            c_tot = float(self.ent_c_total.get())
+            
+            ratio = 10**(ph - pka)
+            acid = c_tot / (ratio + 1)
+            salt = c_tot - acid
+            
+            self.log(f"\n[Буфер] Для досягнення pH {ph} (pKa {pka}):")
+            self.log(f"  Співвідношення [Сіль]/[Кислота] = {ratio:.3f}")
+            self.log(f"  Концентрація кислоти: {acid:.4f} М")
+            self.log(f"  Концентрація солі: {salt:.4f} М")
+        except ValueError:
+            self.log("[Помилка] Перевірте правильність введених чисел.")
+
+    def calc_spec(self):
+        try:
+            a = float(self.ent_abs.get())
+            eps = float(self.ent_eps.get())
+            l = float(self.ent_l.get())
+            
+            c = a / (eps * l)
+            self.log(f"\n[Спектрофотометрія] A = {a}, ε = {eps}, l = {l} см")
+            self.log(f"  Концентрація речовини (c): {c:.6e} М (Моль/літр)")
+        except ValueError:
+            self.log("[Помилка] Перевірте введення. Можна використовувати формат 1e-6.")
+
+    def show_aa_info(self, choice):
+        data = self.aa_data.get(choice, {})
+        if data:
+            text = f"Назва: {choice}\n"
+            text += f"3-буквний код: {data['code3']}\n"
+            text += f"1-буквний код: {data['code1']}\n"
+            text += f"Клас: {data['type']}\n"
+            text += f"Ізоелектрична точка (pI): {data['pi']}\n"
+            text += f"Молярна маса: {data['mw']} г/моль\n"
+            self.lbl_aa_info.configure(text=text)
+
+    def setup_bioinfo_zone(self):
+        self.bio_tabs = ctk.CTkTabview(self.bioinfo_frame)
+        self.bio_tabs.pack(fill="both", expand=True)
+        
+        tab_orf = self.bio_tabs.add("Секвенс та ORF")
+        tab_restr = self.bio_tabs.add("Рестрикція")
+        tab_primer = self.bio_tabs.add("Праймери")
+        
+        ctk.CTkButton(tab_orf, text="Знайти гени (ORF > 100 а/к)", command=self.find_orfs).pack(pady=20)
+        
+        self.ent_enz = ctk.CTkEntry(tab_restr, width=300, placeholder_text="EcoRI, BamHI")
+        self.ent_enz.pack(pady=10)
+        self.ent_enz.insert(0, "EcoRI, BamHI")
+        ctk.CTkButton(tab_restr, text="Картування сайтів", command=self.map_restriction).pack()
+        
+        self.ent_prim = ctk.CTkEntry(tab_primer, width=300, placeholder_text="ATGCGATCGATC")
+        self.ent_prim.pack(pady=10)
+        ctk.CTkButton(tab_primer, text="Оцінити Tm", command=self.analyze_primer).pack()
+
+    def find_orfs(self):
+        if not self.current_seq: return self.log("[!] Спочатку завантажте FASTA.")
+        self.log("\n[ORF] Пошук білків...")
+        translated = self.current_seq.translate()
+        proteins = [p for p in translated.split("*") if len(p) >= 100 and "M" in p]
+        if not proteins: return self.log("  Білкiв довших за 100 а/к не знайдено.")
+        for i, p in enumerate(proteins[:3]):
+            valid_p = p[p.find("M"):]
+            analysis = ProteinAnalysis(str(valid_p))
+            self.log(f"  ORF #{i+1} | Довжина {len(valid_p)} а/к | MW: {analysis.molecular_weight():.1f} Da")
+
+    def map_restriction(self):
+        if not self.current_seq: return self.log("[!] Спочатку завантажте FASTA.")
+        enzymes = [e.strip() for e in self.ent_enz.get().split(",")]
+        try:
+            batch = RestrictionBatch(enzymes)
+            res = batch.search(self.current_seq)
+            self.log("\n[Рестрикція]")
+            for enz, sites in res.items():
+                self.log(f"  {enz}: {len(sites)} сайтів -> {sites}")
+        except Exception as e:
+            self.log(f"[Помилка] {e}")
+
+    def analyze_primer(self):
+        p = self.ent_prim.get().strip().upper()
+        if not p: return
+        tm = mt.Tm_NN(p)
+        self.log(f"\n[Праймер] {p}\n  Температура плавлення (Tm): {tm:.1f} °C")
+
+if __name__ == "__main__":
+    app = BioTechProApp()
+    app.mainloop()
